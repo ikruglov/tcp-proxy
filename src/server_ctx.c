@@ -361,6 +361,12 @@ int init_client_ctx(server_ctx_t* sctx, client_ctx_t* cctx, int fd)
 
 init_client_ctx_error:
     close(client_fd);
+
+    if (cctx->upstream.pipefd[0] >= 0) close(cctx->upstream.pipefd[0]);
+    if (cctx->upstream.pipefd[1] >= 0) close(cctx->upstream.pipefd[1]);
+
+    if (cctx->downstream.pipefd[0] >= 0) close(cctx->downstream.pipefd[0]);
+    if (cctx->downstream.pipefd[1] >= 0) close(cctx->downstream.pipefd[1]);
     return -1;
 }
 
