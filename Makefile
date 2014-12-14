@@ -10,11 +10,11 @@ mkdir:
 	@mkdir -p bin
 
 tcp-proxy: mkdir
-	$(CC) -c -O3 -g -DEV_STANDALONE=1 -Wno-all libev/ev.c -o ev.o
+	$(CC) $(CFLAGS) -c -Wno-all libev/ev.c -o ev.o
 	$(CC) $(CFLAGS) $(INCLUDE) ev.o $(SOURCE) -o bin/tcp-proxy
 
 tsan: mkdir
-	$(CC) -c -O3 -g -fPIC -DEV_STANDALONE=1 -Wno-all libev/ev.c -o ev.o
+	$(CC) $(CFLAGS) -c -fPIC -Wno-all libev/ev.c -o ev.o
 	$(CC) $(CFLAGS) $(INCLUDE) $(TSAN) ev.o $(SOURCE) -o bin/tcp-proxy
 
 clean:
