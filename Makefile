@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-std=gnu99 -O3 -g -Wall -pthread -DDEBUG -DEV_STANDALONE=1 -fno-strict-aliasing
+CFLAGS=-std=gnu99 -O3 -g -Wall -pthread -DNDEBUG=1 -DEV_STANDALONE=1 -fno-strict-aliasing
 TSAN=-fsanitize=thread -fsanitize-blacklist=blacklist.tsan -fPIE -pie # need clang for compilation
 INCLUDE=-I . -I src -I libev
 SOURCE=src/net.c src/server_ctx.c src/tcp-proxy.c
