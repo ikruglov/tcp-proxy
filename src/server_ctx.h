@@ -37,20 +37,12 @@ typedef struct {
     client_ctx_t* used_pool;            // pool of used client_ctx_t objects
 } server_ctx_t;
 
-int init_server_ctx(server_ctx_t* sctx, io_watcher_cb cb,
-                    const socket_t* ssock, const socket_t* usock);
+int init_server_ctx(server_ctx_t* sctx, const socket_t* ssock, const socket_t* usock);
 void terminate_server_ctx(server_ctx_t* sctx);
 void free_server_ctx(server_ctx_t* sctx);
 
 int init_client_ctx(server_ctx_t* sctx, client_ctx_t* cctx, int fd);
 void deinit_client_ctx(server_ctx_t* sctx, client_ctx_t* cctx);
-
-void connect_cb(struct ev_loop* loop, ev_io* w, int revents);
-void upstream_cb(struct ev_loop* loop, ev_io* w, int revents);
-void downstream_cb(struct ev_loop* loop, ev_io* w, int revents);
-
-void accept_cb(struct ev_loop* loop, ev_io* w, int revents);
-void stop_loop_cb(struct ev_loop* loop, ev_async* w, int revents);
 
 client_ctx_t* get_client_ctx(server_ctx_t* sctx);
 void mark_client_ctx_as_used(server_ctx_t* sctx, client_ctx_t* cctx);

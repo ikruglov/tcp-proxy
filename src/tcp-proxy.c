@@ -44,16 +44,15 @@ int main(int argc, char** argv)
 
     for (size_t i = 0; i < threads; ++i) {
         // TODO do this work in threads
-        if (init_server_ctx(&server_ctxs[i], accept_cb, ssock, usock))
+        if (init_server_ctx(&server_ctxs[i], ssock, usock))
             ERRX("Failed to initialize one of server contexts");
 
         server_ctx_ids[i] = start_detached_thread(run_event_loop, server_ctxs[i].loop);
     }
 
     // TODO proper signal handling
-    while (1) {
+    while (1)
         sleep(1);
-    }
 
     // terminate threads
     for (size_t i = 0; i < threads; ++i) {
