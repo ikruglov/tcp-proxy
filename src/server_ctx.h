@@ -28,7 +28,7 @@ typedef struct _client_ctx {
 } client_ctx_t;
 
 typedef struct {
-    ev_io io;                           // server socket, used only to accept() connections
+    ev_io io;                           // watcher, used only to accept() connections
     ev_async stop_loop;                 // signal to interrupt loop
     struct ev_loop *loop;               // thread EV loop
     const socket_t* ssock;              // server socket_t (shared between threads)

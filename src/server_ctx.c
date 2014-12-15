@@ -12,8 +12,9 @@
 inline static
 void accept_cb(struct ev_loop* loop, ev_io* w, int revents)
 {
-    server_ctx_t* sctx = (server_ctx_t*) ev_userdata(loop);
+    server_ctx_t* sctx = (server_ctx_t*) w->data;
     client_ctx_t* cctx = get_client_ctx(sctx);
+
     socket_t* sock = &cctx->downstream.sock;
     sock->addrlen = sizeof(sock->addr);
 
@@ -34,9 +35,9 @@ void accept_cb(struct ev_loop* loop, ev_io* w, int revents)
     return;
 
 accept_cb_error:
-    //free_server_watcher(ctx, isw);
-    _D("!!!");
-    // TODO
+    ev_io_stop(loop, w);
+    close(w->fd);
+    w->fd = -1;
 }
 
 inline static
@@ -55,12 +56,19 @@ int init_server_ctx(server_ctx_t* sctx, const socket_t* ssock, const socket_t* u
     sctx->used_pool = NULL;
     sctx->ssock = ssock;
     sctx->usock = usock;
-
-    sctx->loop = ev_loop_new(EVFLAG_NOSIGMASK); // libev doesn't touch sigmask
-    if (!sctx->loop) return -1;
+    sctx->io.data = sctx;
+    sctx->io.fd = -1;
 
     int fd = setup_socket(ssock, NET_SERVER_SOCKET);
-    if (fd < 0) return -1;
+    if (fd < 0) goto error;
+
+    sctx->loop = ev_loop_new(EVFLAG_NOSIGMASK); // libev doesn't touch sigmask
+    if (!sctx->loop) goto error;
+
+    // !!!!!!!!!!!!!!!!!!!!!!!!!
+    // no error below this point
+    // otherwise free_server_ctx() will do double close() of fd
+    // !!!!!!!!!!!!!!!!!!!!!!!!!
 
     ev_set_userdata(sctx->loop, sctx);
     ev_io_init(&sctx->io, accept_cb, fd, EV_READ);
@@ -70,8 +78,12 @@ int init_server_ctx(server_ctx_t* sctx, const socket_t* ssock, const socket_t* u
     ev_async_start(sctx->loop, &sctx->stop_loop);
 
     // TODO allocate free pool
-
     return 0;
+
+error:
+    if (fd >= 0) close(fd);
+    free_server_ctx(sctx);
+    return -1;
 }
 
 void terminate_server_ctx(server_ctx_t* sctx)
@@ -83,9 +95,18 @@ void terminate_server_ctx(server_ctx_t* sctx)
 void free_server_ctx(server_ctx_t* sctx)
 {
     if (!sctx) return;
-    if (sctx->loop) ev_loop_destroy(sctx->loop);
 
-    // TODO
+    if (sctx->io.fd >= 0) {
+        close(sctx->io.fd);
+        sctx->io.fd = -1;
+    }
+
+    if (sctx->loop) {
+        ev_loop_destroy(sctx->loop);
+        sctx->loop = NULL;
+    }
+
+    // TODO free pool
 }
 
 /******************************************************************
