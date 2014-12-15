@@ -6,35 +6,57 @@
 
 #define MAX_SPLICE_AT_ONCE  (1<<30)
 
+inline static void accept_cb(struct ev_loop* loop, ev_io* w, int revents);
+inline static void stop_loop_cb(struct ev_loop* loop, ev_async* w, int revents);
+
+inline static void connect_cb(struct ev_loop* loop, ev_io* w, int revents);
+inline static void upstream_cb(struct ev_loop* loop, ev_io* w, int revents);
+inline static void downstream_cb(struct ev_loop* loop, ev_io* w, int revents);
+
+inline static client_ctx_t* _get_client_ctx(server_ctx_t* sctx);
+inline static void _mark_client_ctx_as_used(server_ctx_t* sctx, client_ctx_t* cctx);
+inline static void _mark_client_ctx_as_free(server_ctx_t* sctx, client_ctx_t* cctx);
+inline static void _reset_events_mask(struct ev_loop* loop, ev_io* io, int events);
+
 /******************************************************************
  * functions for accepting TCP connections (i.e. server routines) *
  ******************************************************************/
+
 inline static
 void accept_cb(struct ev_loop* loop, ev_io* w, int revents)
 {
+    int fd = -1;
     server_ctx_t* sctx = (server_ctx_t*) w->data;
-    client_ctx_t* cctx = get_client_ctx(sctx);
+    client_ctx_t* cctx = _get_client_ctx(sctx);
+
+    if (!cctx) {
+        // TODO stop callback or goto error ???
+        INFO("limit of max connections reached");
+        return;
+    }
 
     socket_t* sock = &cctx->downstream.sock;
     sock->addrlen = sizeof(sock->addr);
-
-    int fd = accept(w->fd, (struct sockaddr*) &sock->addr, &sock->addrlen);
+    fd = accept(w->fd, (struct sockaddr*) &sock->addr, &sock->addrlen);
 
     if (fd >= 0) {
         humanize_socket(sock);
         if (init_client_ctx(sctx, cctx, fd))
-            goto accept_cb_error;
+            goto error;
 
-        mark_client_ctx_as_used(sctx, cctx);
+        _mark_client_ctx_as_used(sctx, cctx);
+        _D("assigned idx %d to client_ctx_t for %s", cctx->idx, sock->to_string);
+
         INFO("accepted connection from %s", sock->to_string);
     } else if (errno != EINTR && errno != EAGAIN) {
         ERRP("accept() returned error");
-        goto accept_cb_error;
+        goto error;
     }
 
     return;
 
-accept_cb_error:
+error:
+    if (fd >= 0) close(fd);
     ev_io_stop(loop, w);
     close(w->fd);
     w->fd = -1;
@@ -52,10 +74,10 @@ int init_server_ctx(server_ctx_t* sctx, const socket_t* ssock, const socket_t* u
     assert(ssock);
 
     sctx->loop = NULL;
-    sctx->free_pool = NULL;
-    sctx->used_pool = NULL;
     sctx->ssock = ssock;
     sctx->usock = usock;
+    sctx->stack = NULL;
+    sctx->pool = NULL;
     sctx->io.data = sctx;
     sctx->io.fd = -1;
 
@@ -64,6 +86,21 @@ int init_server_ctx(server_ctx_t* sctx, const socket_t* ssock, const socket_t* u
 
     sctx->loop = ev_loop_new(EVFLAG_NOSIGMASK); // libev doesn't touch sigmask
     if (!sctx->loop) goto error;
+
+    sctx->pool = (client_ctx_t*) malloc(sizeof(client_ctx_t) * NUM_OF_PREALLOCATED_CLIENT_CTX);
+    if (!sctx->pool) goto error;
+
+    sctx->stack = stack_init(NUM_OF_PREALLOCATED_CLIENT_CTX);
+    if (!sctx->stack) goto error;
+
+    /* This makes initalization of server_ctx be a havy operation O(n)
+     * but it's done once upon start of tcp-proxy. So, this's an
+     * acceptable trade off taking into account that it allows to have
+     * malloc-free accepts. Another good news is that pushing to stack
+     * is very cache friendly operation. */
+    for (int i = NUM_OF_PREALLOCATED_CLIENT_CTX - 1; i >= 0; --i) {
+        stack_push(sctx->stack, i);
+    }
 
     // !!!!!!!!!!!!!!!!!!!!!!!!!
     // no error below this point
@@ -77,7 +114,6 @@ int init_server_ctx(server_ctx_t* sctx, const socket_t* ssock, const socket_t* u
     ev_async_init(&sctx->stop_loop, stop_loop_cb);
     ev_async_start(sctx->loop, &sctx->stop_loop);
 
-    // TODO allocate free pool
     return 0;
 
 error:
@@ -106,30 +142,20 @@ void free_server_ctx(server_ctx_t* sctx)
         sctx->loop = NULL;
     }
 
-    // TODO free pool
+    if (sctx->pool) {
+        free(sctx->pool);
+        sctx->pool = NULL;
+    }
+
+    if (sctx->stack) {
+        stack_free(sctx->stack);
+        sctx->stack = NULL;
+    }
 }
 
 /******************************************************************
  * communication function (i.e. client routines)                  *
  ******************************************************************/
-
-inline static
-void _reset_events_mask(struct ev_loop* loop, ev_io* io, int events)
-{
-    assert(io);
-    _D("set new events mask %d for %d", events, io->fd);
-
-    if (events == 0) {
-        ev_io_stop(loop, io);
-    } else if (!ev_is_active(io)) {
-        ev_io_set(io, io->fd, events);
-        ev_io_start(loop, io);
-    } else if (io->events != events) {
-        ev_io_stop(loop, io);
-        ev_io_set(io, io->fd, events);
-        ev_io_start(loop, io);
-    }
-}
 
 inline static
 void connect_cb(struct ev_loop* loop, ev_io* w, int revents)
@@ -147,15 +173,23 @@ void connect_cb(struct ev_loop* loop, ev_io* w, int revents)
 
     INFO("connected to %s", sctx->usock->to_string);
 
+    // we have connected to upstream,
+    // so stop connect_cb()
     ev_io_stop(loop, w);
-    ev_io_start(loop, &cctx->upstream.io);
+
+    // reassign and start upstream_cb()
+    ev_io_set(w, w->fd, EV_READ | EV_WRITE);
+    ev_set_cb(w, upstream_cb);
+    ev_io_start(loop, w);
+
+    // start downstream_cb()
     ev_io_start(loop, &cctx->downstream.io);
     return;
 
 connect_cb_error:
     _D("connect_cb_error");
     deinit_client_ctx(sctx, cctx);
-    mark_client_ctx_as_free(sctx, cctx);
+    _mark_client_ctx_as_free(sctx, cctx);
 }
 
 inline static
@@ -244,7 +278,7 @@ void upstream_cb(struct ev_loop* loop, ev_io* w, int revents)
 upstream_cb_error:
     _D("upstream_cb_error");
     deinit_client_ctx(sctx, cctx);
-    mark_client_ctx_as_free(sctx, cctx);
+    _mark_client_ctx_as_free(sctx, cctx);
 }
 
 inline static
@@ -333,18 +367,13 @@ void downstream_cb(struct ev_loop* loop, ev_io* w, int revents)
 downstream_cb_error:
     _D("downstream_cb_error");
     deinit_client_ctx(sctx, cctx);
-    mark_client_ctx_as_free(sctx, cctx);
+    _mark_client_ctx_as_free(sctx, cctx);
 }
 
+// init_client_ctx() does not close fd if failed
 int init_client_ctx(server_ctx_t* sctx, client_ctx_t* cctx, int fd)
 {
     assert(cctx);
-
-    int client_fd = setup_socket(sctx->usock, 0);
-    if (client_fd < 0) return -1;
-
-    int connected = connect_client_socket(sctx->usock, client_fd);
-    if (connected == -1) goto init_client_ctx_error;
 
     cctx->upstream.size = 0;
     cctx->upstream.io.fd = -1;
@@ -352,9 +381,15 @@ int init_client_ctx(server_ctx_t* sctx, client_ctx_t* cctx, int fd)
     cctx->upstream.pipefd[0] = -1;
     cctx->upstream.pipefd[1] = -1;
 
+    int client_fd = setup_socket(sctx->usock, 0);
+    if (client_fd < 0) goto error;
+
+    int connected = connect_client_socket(sctx->usock, client_fd);
+    if (connected == -1) goto error;
+
     if (pipe(cctx->upstream.pipefd)) {
         ERRP("Failed to create pipe");
-        goto init_client_ctx_error;
+        goto error;
     }
 
     cctx->downstream.size = 0;
@@ -365,29 +400,21 @@ int init_client_ctx(server_ctx_t* sctx, client_ctx_t* cctx, int fd)
 
     if (pipe(cctx->downstream.pipefd)) {
         ERRP("Failed to create pipe");
-        goto init_client_ctx_error;
+        goto error;
     }
 
-    cctx->connect.io.fd = -1;
-    cctx->connect.io.data = cctx;
+    // !!!!!!!!!!!!!!!!!!!!!!!!!
+    // no error below this point
+    // !!!!!!!!!!!!!!!!!!!!!!!!!
 
-    // those are started by connect_cb once connected to upstream
-    ev_io_init(&cctx->upstream.io, upstream_cb, client_fd, EV_READ | EV_WRITE);
+    ev_io_init(&cctx->upstream.io, connect_cb, client_fd, EV_WRITE);
     ev_io_init(&cctx->downstream.io, downstream_cb, fd, EV_READ | EV_WRITE);
-
-    ev_io_init(&cctx->connect.io, connect_cb, client_fd, EV_WRITE);
-    ev_io_start(sctx->loop, &cctx->connect.io);
-
+    ev_io_start(sctx->loop, &cctx->upstream.io);
     return 0;
 
-init_client_ctx_error:
-    close(client_fd);
-
-    if (cctx->upstream.pipefd[0] >= 0) close(cctx->upstream.pipefd[0]);
-    if (cctx->upstream.pipefd[1] >= 0) close(cctx->upstream.pipefd[1]);
-
-    if (cctx->downstream.pipefd[0] >= 0) close(cctx->downstream.pipefd[0]);
-    if (cctx->downstream.pipefd[1] >= 0) close(cctx->downstream.pipefd[1]);
+error:
+    if (client_fd >= 0) close(client_fd);
+    deinit_client_ctx(sctx, cctx);
     return -1;
 }
 
@@ -429,34 +456,59 @@ void deinit_client_ctx(server_ctx_t* sctx, client_ctx_t* cctx)
     }
 }
 
-client_ctx_t* get_client_ctx(server_ctx_t* sctx)
+
+/******************************************************************
+ * helper functions                                               *
+ ******************************************************************/
+
+inline static
+void _reset_events_mask(struct ev_loop* loop, ev_io* io, int events)
 {
-    assert(sctx);
+    assert(io);
+    _D("set new events mask %d for %d", events, io->fd);
 
-    client_ctx_t* cctx = sctx->free_pool;
-    if (cctx) return cctx;
-
-    cctx = malloc_or_die(sizeof(client_ctx_t));
-    cctx->next = NULL;
-    sctx->free_pool = cctx;
-    return cctx;
+    if (events == 0) {
+        ev_io_stop(loop, io);
+    } else if (!ev_is_active(io)) {
+        ev_io_set(io, io->fd, events);
+        ev_io_start(loop, io);
+    } else if (io->events != events) {
+        ev_io_stop(loop, io);
+        ev_io_set(io, io->fd, events);
+        ev_io_start(loop, io);
+    }
 }
 
-void mark_client_ctx_as_used(server_ctx_t* sctx, client_ctx_t* cctx)
+inline static
+client_ctx_t* _get_client_ctx(server_ctx_t* sctx)
+{
+    assert(sctx);
+    int idx = stack_peek(sctx->stack);
+    assert(idx < sctx->stack->size);
+
+    return idx >= 0 ? &sctx->pool[idx] : NULL;
+}
+
+inline static
+void _mark_client_ctx_as_used(server_ctx_t* sctx, client_ctx_t* cctx)
 {
     assert(sctx);
     assert(cctx);
-    assert(sctx->free_pool == cctx);
+    assert(!stack_empty(sctx->stack));
 
-    sctx->free_pool = cctx->next;
-    cctx->next = sctx->used_pool;
-    sctx->used_pool = cctx;
+    cctx->idx = stack_pop(sctx->stack);
+    assert(cctx->idx >= 0);
+    assert(cctx->idx < sctx->stack->size);
 }
 
-void mark_client_ctx_as_free(server_ctx_t* sctx, client_ctx_t* cctx)
+inline static
+void _mark_client_ctx_as_free(server_ctx_t* sctx, client_ctx_t* cctx)
 {
     assert(sctx);
     assert(cctx);
-    // TODO
+    assert(cctx->idx >= 0);
+    assert(!stack_full(sctx->stack));
+
+    stack_push(sctx->stack, cctx->idx);
 }
 
