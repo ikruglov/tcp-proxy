@@ -41,6 +41,7 @@ int main(int argc, char** argv)
     const size_t threads = 1;
     pthread_t server_ctx_ids[threads];
     server_ctx_t server_ctxs[threads];
+    INFO("starting %zu eventloops", threads);
 
     for (size_t i = 0; i < threads; ++i) {
         // TODO do this work in threads
@@ -59,4 +60,7 @@ int main(int argc, char** argv)
         terminate_server_ctx(&server_ctxs[i]);
         //free_server_ctx(&server_ctxs[i]);
     }
+
+    INFO("Exiting...");
+    return EXIT_SUCCESS;
 }

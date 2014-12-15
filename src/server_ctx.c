@@ -25,7 +25,7 @@ void accept_cb(struct ev_loop* loop, ev_io* w, int revents)
             goto accept_cb_error;
 
         mark_client_ctx_as_used(sctx, cctx);
-        _D("accepted connection from %s", sock->to_string);
+        INFO("accepted connection from %s", sock->to_string);
     } else if (errno != EINTR && errno != EAGAIN) {
         ERRP("accept() returned error");
         goto accept_cb_error;
@@ -124,7 +124,7 @@ void connect_cb(struct ev_loop* loop, ev_io* w, int revents)
         goto connect_cb_error;
     }
 
-    _D("connected to %s", sctx->usock->to_string);
+    INFO("connected to %s", sctx->usock->to_string);
 
     ev_io_stop(loop, w);
     ev_io_start(loop, &cctx->upstream.io);

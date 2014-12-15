@@ -15,6 +15,7 @@
     "[%llu] [tid:%llu] [%s() %s:%d] " fmt "\n", \
     (unsigned long long) time(NULL), (unsigned long long) pthread_self(), __func__, __FILE__, __LINE__, ##arg
 
+#define INFO(fmt, arg...)       printf(FORMAT(fmt, ##arg))
 #define ERR(fmt, arg...)        printf(FORMAT(fmt, ##arg))
 #define ERRP(fmt, arg...)       printf(FORMAT(fmt ": %s", ##arg, errno ? strerror(errno) : "undefined error"))
 #define ERRN(fmt, sock, arg...) printf(FORMAT(fmt "[%s]: %s", ##arg, sock->to_string, errno ? strerror(errno) : "undefined error"))
