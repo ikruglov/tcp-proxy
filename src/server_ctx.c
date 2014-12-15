@@ -2,6 +2,7 @@
 #include <fcntl.h>
 
 #include "common.h"
+#include "config.h"
 #include "server_ctx.h"
 
 #define MAX_SPLICE_AT_ONCE  (1<<30)
@@ -403,6 +404,14 @@ int init_client_ctx(server_ctx_t* sctx, client_ctx_t* cctx, int fd)
         goto error;
     }
 
+#ifdef F_SETPIPE_SZ
+    if (gl_settings.pipe_size) {
+        _D("Try to set pipe capacity to %zd", gl_settings.pipe_size);
+        fcntl(cctx->upstream.pipefd[0], F_SETPIPE_SZ, gl_settings.pipe_size);
+        fcntl(cctx->downstream.pipefd[0], F_SETPIPE_SZ, gl_settings.pipe_size);
+    }
+#endif
+
     // !!!!!!!!!!!!!!!!!!!!!!!!!
     // no error below this point
     // !!!!!!!!!!!!!!!!!!!!!!!!!
@@ -465,7 +474,7 @@ inline static
 void _reset_events_mask(struct ev_loop* loop, ev_io* io, int events)
 {
     assert(io);
-    _D("set new events mask %d for %d", events, io->fd);
+    //_D("set new events mask %d for %d", events, io->fd);
 
     if (events == 0) {
         ev_io_stop(loop, io);

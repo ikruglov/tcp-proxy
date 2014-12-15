@@ -2,11 +2,15 @@
 #include <pthread.h>
 
 #include "net.h"
+#include "config.h"
 #include "common.h"
 #include "server_ctx.h"
 
 // https://domsch.com/linux/lpc2010/Scaling_techniques_for_servers_with_high_connection%20rates.pdf
 // https://gist.github.com/carun/8146981
+
+// see commnect in config.h
+GLOBAL gl_settings;
 
 pthread_t start_thread(void *(*routine) (void*), void* arg)
 {
@@ -59,13 +63,21 @@ int main(int argc, char** argv)
     sigaction(SIGTERM, &sigact, NULL);
     sigaction(SIGPIPE, &sigact, NULL);
 
+    // read global settings
+    init_global_settings((GLOBAL*) &gl_settings);
+    gl_settings.nproc = LOAD_MAX_SETTING;
+    gl_settings.pipe_size = LOAD_MAX_SETTING;
+    gl_settings.recv_size = LOAD_MAX_SETTING;
+    gl_settings.send_size = LOAD_MAX_SETTING;
+    read_global_settings((GLOBAL*) &gl_settings);
+
     const char* from = argv[1];
     socket_t* ssock = socketize(from, NET_SERVER_SOCKET);
 
     const char* to = argv[2];
     socket_t* usock = socketize(to, 0);
 
-    const size_t threads = 1;
+    const size_t threads = gl_settings.nproc;
     pthread_t server_ctx_ids[threads];
     server_ctx_t server_ctxs[threads];
     INFO("starting %zu eventloops", threads);

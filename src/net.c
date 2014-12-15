@@ -6,6 +6,7 @@
 
 #include "net.h"
 #include "common.h"
+#include "config.h"
 
 socket_t* socketize(const char* arg, int flags)
 {
@@ -55,6 +56,18 @@ int setup_socket(const socket_t* sock, int flags)
         return -1;
     }
 
+    int sendbuf = gl_settings.send_size;
+    if (sendbuf && setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sendbuf, sizeof(sendbuf))) {
+        ERRP("Failed to setsockopt SO_SNDBUF on %s", sock->to_string);
+        goto error;
+    }
+
+    int recvbuf = gl_settings.recv_size;
+    if (recvbuf && setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &recvbuf, sizeof(recvbuf))) {
+        ERRP("Failed to setsockopt SO_RCVBUF on %s", sock->to_string);
+        goto error;
+    }
+
     if (flags & NET_SERVER_SOCKET) {
         int yes = 1;
         if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes))) {
@@ -66,16 +79,6 @@ int setup_socket(const socket_t* sock, int flags)
             ERRP("Failed to setsockopt SO_REUSEPORT on %s", sock->to_string);
             goto error;
         }
-
-    //    if (sendbuf > 0 && setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sendbuf, sizeof(sendbuf))) {
-    //        ERRP("Failed to setsockopt SO_SNDBUF on %s", sock->to_string);
-    //        goto error;
-    //    }
-    //
-    //    if (recvbuf > 0 && setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &recvbuf, sizeof(recvbuf))) {
-    //        ERRP("Failed to setsockopt SO_RCVBUF on %s", sock->to_string);
-    //        goto error;
-    //    }
 
         if (bind(fd, (struct sockaddr *) &sock->addr, sock->addrlen)) {
             ERRP("Failed to bind socket to %s", sock->to_string);
