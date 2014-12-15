@@ -40,7 +40,7 @@ socket_t* socketize(const char* arg, int flags)
     memcpy(&sock->addr, result->ai_addr, result->ai_addrlen);
 
     humanize_socket(sock);
-    _D("socketize: %s -> %s", arg, sock->to_string);
+    INFO("socketize: %s -> %s", arg, sock->to_string);
 
     freeaddrinfo(result);
     free(hostname);
