@@ -19,4 +19,4 @@ tsan: mkdir
 
 clean:
 	rm -f *.o
-	rm -f bin/relay
+	rm -f bin/tcp-proxy
