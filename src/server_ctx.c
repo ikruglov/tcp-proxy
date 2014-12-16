@@ -5,7 +5,8 @@
 #include "config.h"
 #include "server_ctx.h"
 
-#define MAX_SPLICE_AT_ONCE  (1<<30)
+#define EV_DIRECT_CALL     (1<<31)
+#define MAX_SPLICE_AT_ONCE (1<<30)
 
 inline static void accept_cb(struct ev_loop* loop, ev_io* w, int revents);
 inline static void stop_loop_cb(struct ev_loop* loop, ev_async* w, int revents);
@@ -211,43 +212,9 @@ connect_cb_error:
 inline static
 void upstream_cb(struct ev_loop* loop, ev_io* w, int revents)
 {
-    int events = w->events;
+    int new_mask = w->events;
     server_ctx_t* sctx = (server_ctx_t*) ev_userdata(loop);
     client_ctx_t* cctx = (client_ctx_t*) w->data;
-
-    if (revents & EV_WRITE) {
-        // (downstream ->) pipe -> upstream
-        while (cctx->downstream.size) {
-            ssize_t ret = splice(cctx->downstream.pipefd[0], NULL,
-                                 w->fd, NULL,
-                                 cctx->downstream.size, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-
-            if (ret > 0) {
-                cctx->downstream.size -= ret;
-
-                // there is free space in pipe's buffer
-                // activate downstream read communication which fills it
-                ev_io* downstream_io = &cctx->downstream.io;
-                _reset_events_mask(loop, downstream_io, downstream_io->events | EV_READ);
-            } else {
-                if (ret == 0 || errno == EAGAIN) {
-                    events &= ~EV_WRITE;
-                    break;
-                } else if (errno == EINTR) {
-                    continue;
-                } else {
-                    ERRP("splice failed when writting to %s", sctx->usock->to_string);
-                    goto upstream_cb_error;
-                }
-            }
-        }
-
-        if (!cctx->downstream.size) {
-            // there is no data in pipe,
-            // so nothing to write in the socket
-            events &= ~EV_WRITE;
-        }
-    }
 
     if (revents & EV_READ) {
         // upstream -> pipe (-> downstream)
@@ -261,7 +228,17 @@ void upstream_cb(struct ev_loop* loop, ev_io* w, int revents)
             // there is new data in pipe
             // activate downstream write communication which reads data from pipe
             ev_io* downstream_io = &cctx->downstream.io;
-            _reset_events_mask(loop, downstream_io, downstream_io->events | EV_WRITE);
+
+            // prevent infinity loop
+            if (!(revents & EV_DIRECT_CALL)) {
+                downstream_cb(loop, downstream_io, EV_DIRECT_CALL | EV_WRITE);
+            }
+
+            /* idealy cctx->upstream.size should be 0,
+             * otherwise activate downstream watcher which takes care of the rest */
+            if (cctx->upstream.size) {
+                _reset_events_mask(loop, downstream_io, downstream_io->events | EV_WRITE);
+            }
         } else {
             /*
              * ret == 0 - upstream closed connection
@@ -278,7 +255,7 @@ void upstream_cb(struct ev_loop* loop, ev_io* w, int revents)
             }
 
             if (errno == EAGAIN) {
-                events &= ~EV_READ;
+                new_mask &= ~EV_READ;
             } else if (errno == EINTR) {
                 // noop
             } else {
@@ -288,7 +265,47 @@ void upstream_cb(struct ev_loop* loop, ev_io* w, int revents)
         }
     }
 
-    _reset_events_mask(loop, w, events);
+    if (revents & EV_WRITE) {
+        // (downstream ->) pipe -> upstream
+        while (cctx->downstream.size) {
+            ssize_t ret = splice(cctx->downstream.pipefd[0], NULL,
+                                 w->fd, NULL,
+                                 cctx->downstream.size, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+
+            if (ret > 0) {
+                cctx->downstream.size -= ret;
+
+                /* there is free space in pipe's buffer
+                 * activate downstream read communication which fills it,
+                 * but not when downstream called us directly */
+                if (!(revents & EV_DIRECT_CALL)) {
+                    ev_io* downstream_io = &cctx->downstream.io;
+                    _reset_events_mask(loop, downstream_io, downstream_io->events | EV_READ);
+                }
+            } else {
+                if (ret == 0 || errno == EAGAIN) {
+                    new_mask &= ~EV_WRITE;
+                    break;
+                } else if (errno == EINTR) {
+                    continue;
+                } else {
+                    ERRP("splice failed when writting to %s", sctx->usock->to_string);
+                    goto upstream_cb_error;
+                }
+            }
+        }
+
+        if (!cctx->downstream.size) {
+            // there is no data in pipe,
+            // so nothing to write in the socket
+            new_mask &= ~EV_WRITE;
+        }
+    }
+
+    if (!(revents & EV_DIRECT_CALL)) {
+        _reset_events_mask(loop, w, new_mask);
+    }
+
     return;
 
 upstream_cb_error:
@@ -300,43 +317,9 @@ upstream_cb_error:
 inline static
 void downstream_cb(struct ev_loop* loop, ev_io* w, int revents)
 {
-    int events = w->events;
+    int new_mask = w->events;
     server_ctx_t* sctx = (server_ctx_t*) ev_userdata(loop);
     client_ctx_t* cctx = (client_ctx_t*) w->data;
-
-    if (revents & EV_WRITE) {
-        // (upstream ->) pipe -> downstream
-        while (cctx->upstream.size) {
-            ssize_t ret = splice(cctx->upstream.pipefd[0], NULL,
-                                 w->fd, NULL,
-                                 cctx->upstream.size, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-
-            if (ret > 0) {
-                cctx->upstream.size -= ret;
-
-                // there is free space in pipe's buffer
-                // activate upstream read communication which fills it
-                ev_io* upstream_io = &cctx->upstream.io;
-                _reset_events_mask(loop, upstream_io, upstream_io->events | EV_READ);
-            } else {
-                if (ret == 0 || errno == EAGAIN) {
-                    events &= ~EV_WRITE;
-                    break;
-                } else if (errno == EINTR) {
-                    continue;
-                } else {
-                    ERRP("splice failed when writting to %s", cctx->downstream.sock.to_string);
-                    goto downstream_cb_error;
-                }
-            }
-        }
-
-        if (!cctx->upstream.size) {
-            // there is no data in pipe,
-            // so nothing to write in the socket
-            events &= ~EV_WRITE;
-        }
-    }
 
     if (revents & EV_READ) {
         // downstream -> pipe (-> upstream)
@@ -347,10 +330,21 @@ void downstream_cb(struct ev_loop* loop, ev_io* w, int revents)
         if (ret > 0) {
             cctx->downstream.size += ret;
 
-            // there is new data in pipe
-            // activate upstream write communication which reads data from pipe
+            /* if there is new data in pipe, try to invoke upstream
+             * callback directly (which safe watcher start/stop loop).
+             * if it failed to write all data to upstream than activat ewatcher */
+
             ev_io* upstream_io = &cctx->upstream.io;
-            _reset_events_mask(loop, upstream_io, upstream_io->events | EV_WRITE);
+
+            // checking for EV_DIRECT_CALL prevents infinity loop
+            if (!(revents & EV_DIRECT_CALL)) {
+                upstream_cb(loop, upstream_io, EV_DIRECT_CALL | EV_WRITE);
+            }
+
+            // idealy cctx->downstream.size should be 0 now
+            if (cctx->downstream.size) {
+                _reset_events_mask(loop, upstream_io, upstream_io->events | EV_WRITE);
+            }
         } else {
             /*
              * ret == 0 - upstream closed connection
@@ -367,7 +361,7 @@ void downstream_cb(struct ev_loop* loop, ev_io* w, int revents)
             }
 
             if (errno == EAGAIN) {
-                events &= ~EV_READ;
+                new_mask &= ~EV_READ;
             } else if (errno == EINTR) {
                 // noop
             } else {
@@ -377,7 +371,47 @@ void downstream_cb(struct ev_loop* loop, ev_io* w, int revents)
         }
     }
 
-    _reset_events_mask(loop, w, events);
+    if (revents & EV_WRITE) {
+        // (upstream ->) pipe -> downstream
+        while (cctx->upstream.size) {
+            ssize_t ret = splice(cctx->upstream.pipefd[0], NULL,
+                                 w->fd, NULL,
+                                 cctx->upstream.size, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+
+            if (ret > 0) {
+                cctx->upstream.size -= ret;
+
+                /* there is free space in pipe's buffer
+                 * activate upstream read communication which fills it,
+                 * but not when upstream called us directly */
+                if (!(revents & EV_DIRECT_CALL)) {
+                    ev_io* upstream_io = &cctx->upstream.io;
+                    _reset_events_mask(loop, upstream_io, upstream_io->events | EV_READ);
+                }
+            } else {
+                if (ret == 0 || errno == EAGAIN) {
+                    new_mask &= ~EV_WRITE;
+                    break;
+                } else if (errno == EINTR) {
+                    continue;
+                } else {
+                    ERRP("splice failed when writting to %s", cctx->downstream.sock.to_string);
+                    goto downstream_cb_error;
+                }
+            }
+        }
+
+        if (!cctx->upstream.size) {
+            // there is no data in pipe,
+            // so nothing to write in the socket
+            new_mask &= ~EV_WRITE;
+        }
+    }
+
+    if (!(revents & EV_DIRECT_CALL)) {
+        _reset_events_mask(loop, w, new_mask);
+    }
+
     return;
 
 downstream_cb_error:
