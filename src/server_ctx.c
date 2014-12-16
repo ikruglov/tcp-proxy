@@ -32,9 +32,8 @@ void accept_cb(struct ev_loop* loop, ev_io* w, int revents)
     client_ctx_t* cctx = _get_client_ctx(sctx);
 
     if (!cctx) {
-        // TODO stop callback or goto error ???
         INFO("limit of max connections reached");
-        return;
+        goto temp_error;
     }
 
     socket_t* sock = &cctx->downstream.sock;
@@ -50,11 +49,37 @@ void accept_cb(struct ev_loop* loop, ev_io* w, int revents)
         _D("assigned idx %d to client_ctx_t for %s", cctx->idx, sock->to_string);
 
         INFO("accepted connection from %s", sock->to_string);
-    } else if (errno != EINTR && errno != EAGAIN) {
-        ERRP("accept() returned error");
-        goto error;
+    } else {
+        switch (errno) {
+            case EINTR:
+            case EAGAIN:
+            case ECONNABORTED:
+                break; // noop
+
+            case ENFILE:
+            case EMFILE:
+            case ENOBUFS:
+            case ENOMEM:
+                // we have problems with various resources
+                ERRP("accept() returned error reflecting exhasting of resource");
+                goto temp_error;
+
+            case EPROTO:
+                ERRP("accept() returned non-critical error");
+                goto temp_error;
+
+            default:
+                ERRP("accept() returned critical error");
+                goto error;
+        }
     }
 
+    return;
+
+temp_error:
+    /* TODO
+     * creating a busy loop,
+     * better would be to pause watcher for a while */
     return;
 
 error:
