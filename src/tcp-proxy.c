@@ -6,9 +6,6 @@
 #include "common.h"
 #include "server_ctx.h"
 
-// https://domsch.com/linux/lpc2010/Scaling_techniques_for_servers_with_high_connection%20rates.pdf
-// https://gist.github.com/carun/8146981
-
 // see commnect in config.h
 GLOBAL gl_settings;
 
@@ -116,6 +113,10 @@ int main(int argc, char** argv)
         return EXIT_SUCCESS;
     }
 
+    /* tsan reports lots of data races here,
+     * I will ignore them because:
+     * a) not enough time
+     * b) the app is about to terminate */
     for (size_t i = 0; i < threads; ++i) {
         free_server_ctx(&server_ctxs[i]);
     }
