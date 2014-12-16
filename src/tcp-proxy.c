@@ -120,6 +120,9 @@ int main(int argc, char** argv)
         free_server_ctx(&server_ctxs[i]);
     }
 
+    free(ssock);
+    free(usock);
+
     INFO("Exiting...");
     return EXIT_SUCCESS;
 }
