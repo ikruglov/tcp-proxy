@@ -69,6 +69,8 @@ int main(int argc, char** argv)
     gl_settings.pipe_size = LOAD_MAX_SETTING;
     gl_settings.recv_size = LOAD_MAX_SETTING;
     gl_settings.send_size = LOAD_MAX_SETTING;
+    gl_settings.minconn = 1000;
+    gl_settings.maxconn = 10 * gl_settings.minconn;
     read_global_settings((GLOBAL*) &gl_settings);
 
     const char* from = argv[1];

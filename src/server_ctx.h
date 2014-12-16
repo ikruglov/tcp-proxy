@@ -5,8 +5,6 @@
 #include "stack.h"
 #include "libev/ev.h"
 
-#define NUM_OF_PREALLOCATED_CLIENT_CTX 10000
-
 typedef void (io_watcher_cb)(struct ev_loop* loop, ev_io *w, int revents);
 
 typedef struct _client_ctx {

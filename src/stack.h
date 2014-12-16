@@ -11,6 +11,7 @@ typedef struct {
 inline static
 int_stack_t* stack_init(size_t size)
 {
+    if (!size) return NULL;
     int new_size = sizeof(int_stack_t) + (sizeof(int) * size);
     int_stack_t* s = (int_stack_t*) malloc(new_size);
     if (!s) return NULL;
@@ -18,6 +19,18 @@ int_stack_t* stack_init(size_t size)
     s->top = -1;
     s->size = size;
     return s;
+}
+
+inline static
+int_stack_t* stack_grow(int_stack_t* s, size_t size)
+{
+    if (!size) return s;
+    int new_size = sizeof(int_stack_t) + (sizeof(int) * size);
+    int_stack_t* stack = (int_stack_t*) realloc(s, new_size);
+    if (!stack) return s;
+
+    s->size = size;
+    return stack;
 }
 
 inline static

@@ -14,6 +14,7 @@ inline static void connect_cb(struct ev_loop* loop, ev_io* w, int revents);
 inline static void upstream_cb(struct ev_loop* loop, ev_io* w, int revents);
 inline static void downstream_cb(struct ev_loop* loop, ev_io* w, int revents);
 
+inline static int grow_pool(server_ctx_t* sctx, size_t size);
 inline static client_ctx_t* _get_client_ctx(server_ctx_t* sctx);
 inline static void _mark_client_ctx_as_used(server_ctx_t* sctx, client_ctx_t* cctx);
 inline static void _mark_client_ctx_as_free(server_ctx_t* sctx, client_ctx_t* cctx);
@@ -88,20 +89,9 @@ int init_server_ctx(server_ctx_t* sctx, const socket_t* ssock, const socket_t* u
     sctx->loop = ev_loop_new(EVFLAG_NOSIGMASK); // libev doesn't touch sigmask
     if (!sctx->loop) goto error;
 
-    sctx->pool = (client_ctx_t*) malloc(sizeof(client_ctx_t) * NUM_OF_PREALLOCATED_CLIENT_CTX);
-    if (!sctx->pool) goto error;
+    if (grow_pool(sctx, gl_settings.minconn))
+        goto error;
 
-    sctx->stack = stack_init(NUM_OF_PREALLOCATED_CLIENT_CTX);
-    if (!sctx->stack) goto error;
-
-    /* This makes initalization of server_ctx be a havy operation O(n)
-     * but it's done once upon start of tcp-proxy. So, this's an
-     * acceptable trade off taking into account that it allows to have
-     * malloc-free accepts. Another good news is that pushing to stack
-     * is very cache friendly operation. */
-    for (int i = NUM_OF_PREALLOCATED_CLIENT_CTX - 1; i >= 0; --i) {
-        stack_push(sctx->stack, i);
-    }
 
     // !!!!!!!!!!!!!!!!!!!!!!!!!
     // no error below this point
@@ -489,12 +479,68 @@ void _reset_events_mask(struct ev_loop* loop, ev_io* io, int events)
 }
 
 inline static
-client_ctx_t* _get_client_ctx(server_ctx_t* sctx)
+int grow_pool(server_ctx_t* sctx, size_t size)
 {
     assert(sctx);
-    int idx = stack_peek(sctx->stack);
-    assert(idx < sctx->stack->size);
 
+    /* grow pool has O(n) complexety.
+     * But good news is that pushing to
+     * stack is very-very cache friendly */
+    _D("grow_pool to size %zd", size);
+
+    size_t old_size = 0;
+    int_stack_t* stack = NULL;
+    client_ctx_t* pool = NULL;
+
+    pool = realloc(sctx->pool, size);
+    if (!pool) {
+        ERR("Failed to allocate pool");
+        goto error;
+    }
+
+    if (sctx->stack) {
+        old_size = sctx->stack->size;
+        stack = stack_grow(sctx->stack, size);
+    } else {
+        stack = stack_init(size);
+    }
+
+    if (!stack) {
+        ERR("Failed to grow stack");
+        goto error;
+    }
+
+    _D("fill stack with items from %zd to %zd", size - 1, old_size);
+    for (int i = size - 1; i >= (int) old_size; --i) {
+        stack_push(stack, i);
+    }
+
+    sctx->pool = pool;
+    sctx->stack = stack;
+    return 0;
+
+error:
+    free(pool);
+    free(stack);
+    return -1;
+}
+
+inline static
+client_ctx_t* _get_client_ctx(server_ctx_t* sctx)
+{
+    /* _get_client_ctx() has ammortized O(1) complexity
+     * i.e. we need to scan N items no often then N calls of _get_client_ctx() */
+
+    assert(sctx);
+    assert(sctx->stack);
+
+    int idx = stack_peek(sctx->stack);
+    if (idx < 0 && sctx->stack->size < gl_settings.maxconn) {
+        grow_pool(sctx, sctx->stack->size * 2 + 1); // + 1 to hanle size == 0
+        idx = stack_peek(sctx->stack);
+    }
+
+    assert(idx < sctx->stack->size);
     return idx >= 0 ? &sctx->pool[idx] : NULL;
 }
 
@@ -503,6 +549,7 @@ void _mark_client_ctx_as_used(server_ctx_t* sctx, client_ctx_t* cctx)
 {
     assert(sctx);
     assert(cctx);
+    assert(sctx->stack);
     assert(!stack_empty(sctx->stack));
 
     cctx->idx = stack_pop(sctx->stack);
@@ -515,9 +562,11 @@ void _mark_client_ctx_as_free(server_ctx_t* sctx, client_ctx_t* cctx)
 {
     assert(sctx);
     assert(cctx);
+    assert(sctx->stack);
     assert(cctx->idx >= 0);
     assert(!stack_full(sctx->stack));
 
     stack_push(sctx->stack, cctx->idx);
+    // TODO shrink pool
 }
 
