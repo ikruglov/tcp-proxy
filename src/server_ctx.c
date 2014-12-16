@@ -204,7 +204,6 @@ void connect_cb(struct ev_loop* loop, ev_io* w, int revents)
     return;
 
 connect_cb_error:
-    _D("connect_cb_error");
     deinit_client_ctx(sctx, cctx);
     _mark_client_ctx_as_free(sctx, cctx);
 }
@@ -309,7 +308,6 @@ void upstream_cb(struct ev_loop* loop, ev_io* w, int revents)
     return;
 
 upstream_cb_error:
-    _D("upstream_cb_error");
     deinit_client_ctx(sctx, cctx);
     _mark_client_ctx_as_free(sctx, cctx);
 }
@@ -415,7 +413,6 @@ void downstream_cb(struct ev_loop* loop, ev_io* w, int revents)
     return;
 
 downstream_cb_error:
-    _D("downstream_cb_error");
     deinit_client_ctx(sctx, cctx);
     _mark_client_ctx_as_free(sctx, cctx);
 }
@@ -482,12 +479,14 @@ void deinit_client_ctx(server_ctx_t* sctx, client_ctx_t* cctx)
     if (!cctx) return;
 
     if (cctx->upstream.io.fd >= 0) {
+        INFO("disconnect upstream %s", sctx->usock->to_string);
         ev_io_stop(sctx->loop, &cctx->upstream.io);
         close(cctx->upstream.io.fd);
         cctx->upstream.io.fd = -1;
     }
 
     if (cctx->downstream.io.fd >= 0) {
+        INFO("disconnect downstream %s", cctx->downstream.sock.to_string);
         ev_io_stop(sctx->loop, &cctx->downstream.io);
         close(cctx->downstream.io.fd);
         cctx->downstream.io.fd = -1;
